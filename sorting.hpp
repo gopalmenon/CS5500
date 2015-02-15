@@ -174,7 +174,7 @@ public:
 		std::chrono::milliseconds runTimeInMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
 		
 		//Store the last run time in seconds
-		this->runningTime = runTimeInMilliseconds.count() / 1000.0;
+		this->runningTime = runTimeInMilliseconds.count() * 1.0;
 	}
 
 	std::vector<int> getData() {
@@ -202,7 +202,7 @@ public:
 		std::chrono::milliseconds runTimeInMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::high_resolution_clock::now() - start);
 
 		//Store the last run time in seconds
-		this->runningTime = runTimeInMilliseconds.count() / 1000.0;
+		this->runningTime = runTimeInMilliseconds.count() * 1.0;
 
 	}
 
