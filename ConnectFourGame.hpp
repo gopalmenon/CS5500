@@ -1,207 +1,574 @@
+#ifndef CONNECTFOURGAME
+#define CONNECTFOURGAME
+
 #include <tbb\blocked_range.h>
-#include <tbb\parallel_for.h>
 #include <tbb\parallel_reduce.h>
 
+#include "GameBoard.hpp"
 #include "GameSlot.hpp"
 
 #include <algorithm> 
-#include <cassert>
+#include <climits>
 #include <iostream>
 #include <utility>
 #include <vector>
 
-class ConnectFourGame {
+namespace controller {
 
-private:
+	class ConnectFourGame {
 
-	//Constants
-	const static int DEFAULT_NUMBER_OF_ROWS = 6;
-	const static int DEFAULT_NUMBER_OF_COLUMNS = 7;
-	const static bool DEFAULT_FIRST_PLAYER_IS_USER = true;
-	const static bool DEFAULT_DIFFICULTY_LEVEL = 0;
+	private:
 
-	int numberOfRows, numberOfColumns, gameDifficultyLevel;
-	bool firstPlayerIsUser;
-	std::vector<GameSlot> gameBoard;
+		//Constants
+		const static bool DEFAULT_FIRST_PLAYER_IS_USER = true;
+		const static bool DEFAULT_MODE_IS_PARALLEL = true;
+		const static int DEFAULT_DIFFICULTY_LEVEL = 2;
+		const static int HEURISTIC_SCORE_FOR_ONE_IN_ROW = 1;
+		const static int HEURISTIC_SCORE_FOR_TWO_IN_ROW = 3;
+		const static int HEURISTIC_SCORE_FOR_THREE_IN_ROW = 9;
+		const static int HEURISTIC_SCORE_FOR_FOUR_IN_ROW = INT_MAX;
+		const static int COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW = 3;
 
-	//Check if this is a valid play given the game board dimensions and coins already played
-	bool isValidPlay(int dropInColumn) {
+		int gameDifficultyLevel;
+		bool firstPlayerIsUser, defaultModeIsParallel, gameIsOver, userWonTheGame;
+		model::GameBoard gameBoard;
 
-		//First check if the column number is valid as per the dimensions of the game board
-		if (isValidColumn(dropInColumn)) {
+		//Drop a coin into one of the columns
+		void dropCoin(int dropInColumn, bool isUserCoin) {
 
-			//Next check if there is at least one empty slot in the column. i.e. check if the top slot is empty
-			if (gameBoard.at(dropInColumn).isEmpty()) {
+			//First check if the play is a valid one
+			if (this->gameBoard.isValidPlay(dropInColumn)) {
+
+				//Place a user coin in the top available position
+				GameSlot& gameSlot = this->gameBoard.getGameSlot(this->gameBoard.getAvailableSlot(dropInColumn));
+				gameSlot.putCoin(isUserCoin);
+
+				if (wasWinningPlay(dropInColumn, true)) {
+					endTheGame(true);
+				}
+				else {
+					//Make a move to best counter the user move
+					int columnToPlay = counterUserMove();
+					//std::cout << "User move countered by dropping in column " << columnToPlay << std::endl;
+					int rowToPlay = this->gameBoard.getRowNumber(this->gameBoard.getAvailableSlot(columnToPlay));
+					GameSlot& gameSlot = this->gameBoard.getGameSlot(this->gameBoard.getBoardIndex(rowToPlay, columnToPlay));
+					gameSlot.putCoin(false);
+					if (wasWinningPlay(columnToPlay, false)) {
+						endTheGame(false);
+					}
+				}
+			}
+		}
+
+		//Check if the last play was a winning play
+		bool wasWinningPlay(int columnPlayed, bool isUserCoin) {
+
+			//Compute hueristic scores for horizontal, vertical and diagonal four coins in a row resulting from 
+			//coin being dropped in column
+			int horizontalHueristicScore = getHorizontalHueristicScore(columnPlayed, this->gameBoard, isUserCoin);
+			int verticalHueristicScore = getVerticalHueristicScore(columnPlayed, this->gameBoard, isUserCoin);
+			int positiveSlopeHueristicScore = getPositiveSlopeHueristicScore(columnPlayed, this->gameBoard, isUserCoin);
+			int negativeSlopeHueristicScore = getNegativeSlopeHueristicScore(columnPlayed, this->gameBoard, isUserCoin);
+
+			//If it was a winning move, then return with indicator saying so
+			if (horizontalHueristicScore == INT_MAX ||
+				verticalHueristicScore == INT_MAX ||
+				positiveSlopeHueristicScore == INT_MAX ||
+				negativeSlopeHueristicScore == INT_MAX) {
+
 				return true;
 			}
 			else {
 				return false;
 			}
-
-		}
-		else {
-			return false;
 		}
 
-	}
-
-	//Check if the column is valid according to the board dimensions
-	bool isValidColumn(int columnNumber) {
-
-		if (columnNumber >= 0 && columnNumber < this->numberOfColumns) {
-			return true;
-		}
-		else {
-			return false;
-		}
-	}
-
-	//Called by the constructors. Fill the game board with empty slots
-	void fillGameBoardWithEmptySlots(int numberOfRows, int numberOfColumns) {
-
-		int numberOfSlotsOnGameBoard = numberOfRows * numberOfColumns;
-		//TODO check if this is worth doing in parallel
-		for (int slotCounter = 0; slotCounter < numberOfSlotsOnGameBoard; ++slotCounter) {
-			gameBoard.emplace_back(GameSlot());
+		//End the game
+		void endTheGame(bool userWon) {			
+			this->gameIsOver = true;
+			this->userWonTheGame = userWon;
 		}
 
-	}
+		int bestHeuristicScoreForOpponentMoveParallel(int depth, bool isUserCoin, const model::GameBoard gameBoard) {
+			//Do a parallel reduction to find the move with the highest score
 
-	//Return the index corresponding to the top available position
-	int getAvailableSlot(int columnNumber) {
-
-		//Make sure that this is a valid play
-		assert(isValidPlay(columnNumber));
-
-		//Find the top and bottom rows in the columns
-		int bottomRowInColumn = columnNumber + this->numberOfColumns * (this->numberOfRows - 1);
-		int topRowInColumn = columnNumber;
-
-		//Start with bottom row and go one cell above at a time till an empty one is found
-		for (int slotCounter = bottomRowInColumn; slotCounter >= topRowInColumn; slotCounter -= this->numberOfColumns) {
-			if (this->gameBoard.at(slotCounter).isEmpty()) {
-				return slotCounter;
-			}
-		}
-
-		//Exit the program as if it reaches here as this should never happen
-		assert(false);
-
-		return 0;
-	}
-
-	//Drop a coin into one of the columns
-	void dropCoin(int dropInColumn, bool isUserCoin) {
-
-		//First check if the play is a valid one
-		if (this->isValidPlay(dropInColumn)) {
-
-			//Place a user coin in the top available position
-			this->gameBoard.at(getAvailableSlot(dropInColumn)).putCoin(isUserCoin);
-
-			if (wasWinningPlay(dropInColumn, true)) {
-				endTheGame(true);
-			}
-			else {
-				//Make a move to best counter the user move
-				counterUserMove();
-			}
-		}
-	}
-
-
-	//Check if the last play was a winning play
-	bool wasWinningPlay(int columnPlayed, bool playedByUser) {
-
-		//TODO check for horizontal, vertical and two diagonal winning play
-		return false;
-
-	}
-	
-	//Show message saying who won and disable game controls
-	void endTheGame(bool userWon) {
-
-		//TODO display message saying the user won/lost and disable game playing controls
-	}
-
-	//Consider all possible moves and play the one with the best hueristic score that maximizes the chance of winning 
-	void counterUserMove() {
-
-		std::vector<int> moveScores;
-
-		//Find best move by considering all columns in parallel using the Map pattern
-		tbb::parallel_for(
-			tbb::blocked_range<int>(0, this->numberOfColumns),
-			[&](tbb::blocked_range<int> range) {
-				for (size_t coulumnCounter = range.begin(); coulumnCounter != range.end(); ++coulumnCounter) {
-					moveScores.emplace_back(getMoveHueristicScore(coulumnCounter, true, this->gameDifficultyLevel));
-				}
-			}
-		);
-
-		//Do a parallel reduction to find the move with the highest score
-		tbb::parallel_reduce(
-			tbb::blocked_range<int>(0, this->numberOfColumns),
-			0,
-			[=](const tbb::blocked_range<int>& range, int moveColumn)->int {
+			return tbb::parallel_reduce(
+				tbb::blocked_range<int>(0, gameBoard.getNumberOfColumns()),
+				0,
+				[=](const tbb::blocked_range<int>& range, int bestScore)->int {
+				int currentScore;
+				bestScore = -1 * INT_MAX;
 				for (int columnCounter = range.begin(); columnCounter != range.end(); ++columnCounter) {
-					if (moveScores.at(columnCounter) > moveColumn) {
-						moveColumn = moveScores.at(columnCounter);
+
+					if (gameBoard.isValidPlay(columnCounter)) {
+						//Make a copy of the current gameboard to simulate a dropped coin
+						model::GameBoard whatIfGameBoard{ gameBoard.getGameBoardVector(), this->gameBoard.getNumberOfRows(), this->gameBoard.getNumberOfColumns() };
+						whatIfGameBoard.forceDropCoin(columnCounter, isUserCoin);
+
+						currentScore = getMoveHueristicScore(depth, columnCounter, isUserCoin, whatIfGameBoard);
+						if (currentScore > bestScore) {
+							bestScore = currentScore;
+						}
+
 					}
 				}
-				return moveColumn;
+
+				return bestScore;
 			},
-			[](int moveColumn1, int moveColumn2)->int {
-				if (moveColumn1 > moveColumn2) {
-					return moveColumn1;
-				}
-				else {
-					return moveColumn2;
+				[](int bestScore1, int bestScore2)->int {
+				return std::max(bestScore1, bestScore2);
+			}
+			);
+		}
+
+		int bestHeuristicScoreForOpponentMoveSeries(int depth, bool isUserCoin, const model::GameBoard gameBoard) {
+
+			int currentScore, bestScore = -1 * INT_MAX;
+			for (int columnCounter = 0; columnCounter < gameBoard.getNumberOfColumns(); ++columnCounter) {
+
+				if (gameBoard.isValidPlay(columnCounter)) {
+					//Make a copy of the current gameboard to simulate a dropped coin
+					model::GameBoard whatIfGameBoard{ gameBoard.getGameBoardVector(), this->gameBoard.getNumberOfRows(), this->gameBoard.getNumberOfColumns() };
+					whatIfGameBoard.forceDropCoin(columnCounter, isUserCoin);
+
+					currentScore = getMoveHueristicScore(depth, columnCounter, isUserCoin, whatIfGameBoard);
+					if (currentScore > bestScore) {
+						bestScore = currentScore;
+					}
+
 				}
 			}
-		);
-	}
 
-	int getMoveHueristicScore(int columnPlayed, bool isRespondingToUserPlay, int recursionDepth) {
+			return bestScore;
+		}
 
-		//TODO implement hueristics to return score of the move
-		return 1;
+		//Compute best heuristic score for opponent move
+		int bestHeuristicScoreForOpponentMove(int depth, bool isUserCoin, const model::GameBoard gameBoard) {
 
-	}
+			if (this->defaultModeIsParallel) {
+				return bestHeuristicScoreForOpponentMoveParallel(depth, isUserCoin, gameBoard);
+			}
+			else {
+				return bestHeuristicScoreForOpponentMoveSeries(depth, isUserCoin, gameBoard);
+			}
 
-public:
+		}
 
-	//Default constructor will set game parameters using default values
-	ConnectFourGame() {
-		this->numberOfRows = DEFAULT_NUMBER_OF_ROWS;
-		this->numberOfColumns = DEFAULT_NUMBER_OF_COLUMNS;
-		this->firstPlayerIsUser = DEFAULT_FIRST_PLAYER_IS_USER;
-		this->gameDifficultyLevel = DEFAULT_DIFFICULTY_LEVEL;
-		fillGameBoardWithEmptySlots(this->numberOfRows, this->numberOfColumns);
-		//TODO computer to go first depending on user setting
-	}
+		//Compute and return the hueristic score for the move
+		int getMoveHueristicScore(int depth, int columnPlayed, bool isUserCoin, model::GameBoard gameBoard) {
 
-	ConnectFourGame(int numberOfRows, int numberOfColumns) {
-		this->numberOfRows = numberOfRows;
-		this->numberOfColumns = numberOfColumns;
-		fillGameBoardWithEmptySlots(this->numberOfRows, this->numberOfColumns);
-		//TODO computer to go first depending on user setting
-	}
+			//std::cout << "depth " << depth << ", column " << columnPlayed << (isUserCoin ? ", user coin" : ", computer coin") << std::endl;
+			//If maximum depth has been reached, then return
+			if (depth == 0) {
+				return 0;
+			}
 
-	//First player will be determined by user selection
-	void setWhoPlaysFirst(bool firstPlayerIsUser) {
-		this->firstPlayerIsUser = firstPlayerIsUser;
-	}
+			//Compute hueristic scores for horizontal, vertical and diagonal four coins in a row resulting from 
+			//coin being dropped in column
+			int horizontalHueristicScore = getHorizontalHueristicScore(columnPlayed, gameBoard, isUserCoin);
+			int verticalHueristicScore = getVerticalHueristicScore(columnPlayed, gameBoard, isUserCoin);
+			int positiveSlopeHueristicScore = getPositiveSlopeHueristicScore(columnPlayed, gameBoard, isUserCoin);
+			int negativeSlopeHueristicScore = getNegativeSlopeHueristicScore(columnPlayed, gameBoard, isUserCoin);
 
-	//Difficulty level will be set by user
-	void setgameDifficultyLevel(int gameDifficultyLevel) {
-		this->gameDifficultyLevel = gameDifficultyLevel;
-	}
+			//If it was a winning move, then return with indicator saying so
+			if (horizontalHueristicScore == INT_MAX ||
+				verticalHueristicScore == INT_MAX ||
+				positiveSlopeHueristicScore == INT_MAX ||
+				negativeSlopeHueristicScore == INT_MAX) {
 
-	//User method to drop a coin into one of the columns
-	void dropCoin(int dropInColumn) {
+				return INT_MAX;
+			}
+
+			int heuristicScoreForCurrentMove = horizontalHueristicScore +
+				verticalHueristicScore +
+				positiveSlopeHueristicScore +
+				negativeSlopeHueristicScore;
+
+			int bestOpponentMoveScore = bestHeuristicScoreForOpponentMove(depth - 1, isUserCoin ? false : true, gameBoard);
+
+			if (bestOpponentMoveScore == INT_MAX || bestOpponentMoveScore == -INT_MAX) {
+				return -1 * bestOpponentMoveScore;
+			}
+			else {
+				return heuristicScoreForCurrentMove - bestOpponentMoveScore;
+			}
+			 
+		}
+
+		//Check if the cells between from and to index are of the required type or empty. 
+		//Also count the number of cells of the required type.
+		bool isEmptyOrRequiredType(int fromIndex, int toIndex, bool userCoinPlayed, int& hueristicScore, model::GameBoard gameBoard) {
+
+			int coinCount = 0, nextRow, nextColumn, nextIndex;
+			bool firstTime = true;
+
+			int fromRow = gameBoard.getRowNumber(fromIndex);
+			int fromColumn = gameBoard.getColumnNumber(fromIndex);
+			int toRow = gameBoard.getRowNumber(toIndex);
+			int toColumn = gameBoard.getColumnNumber(toIndex);
+
+			for (int counter = 0; counter <= COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW; ++counter) {
+
+				if (fromRow == toRow) {//horizontal sequence
+					nextRow = fromRow;
+					nextColumn = fromColumn + counter;
+					nextIndex = gameBoard.getBoardIndex(nextRow, nextColumn);
+				}
+				else if (fromColumn == toColumn) {//vertical sequence
+					nextRow = fromRow + counter;
+					nextColumn = fromColumn;
+					nextIndex = gameBoard.getBoardIndex(nextRow, nextColumn);
+				}
+				else if (fromRow > toRow && fromColumn < toColumn) {//diagonal going up
+					if (firstTime) {
+						firstTime = false;
+						nextIndex = fromIndex;
+					}
+					else {
+						nextIndex = gameBoard.getDiagonalCellToRightGoingUp(nextIndex);
+					}
+
+				}
+				else if (fromRow < toRow && fromColumn < toColumn) {//diagonal going down
+					if (firstTime) {
+						firstTime = false;
+						nextIndex = fromIndex;
+					}
+					else {
+						nextIndex = gameBoard.getDiagonalCellToRightGoingDown(nextIndex);
+					}
+
+				}
+
+				if (gameBoard.getGameSlot(nextIndex).hasComputerCoin()) {
+					if (userCoinPlayed) {
+						return false;
+					}
+					else {
+						++coinCount;
+					}
+				}
+				else if (gameBoard.getGameSlot(nextIndex).hasUserCoin()) {
+					if (userCoinPlayed) {
+						++coinCount;
+					}
+					else {
+						return false;
+					}
+				}
+
+			}
+
+			if (coinCount == 1) {
+				hueristicScore = HEURISTIC_SCORE_FOR_ONE_IN_ROW;
+			}
+			else if (coinCount == 2) {
+				hueristicScore = HEURISTIC_SCORE_FOR_TWO_IN_ROW;
+			}
+			else if (coinCount == 3) {
+				hueristicScore = HEURISTIC_SCORE_FOR_THREE_IN_ROW;
+			}
+			else if (coinCount == 4) {
+				hueristicScore = HEURISTIC_SCORE_FOR_FOUR_IN_ROW;
+			}
+			else {
+				hueristicScore = 0;
+			}
+
+			return true;
+		}
+
+		//Heuristic score for dropping a coin in the column played for all potential four-in-a-row horizontal configurations.
+		int getHorizontalHueristicScore(int columnPlayed, model::GameBoard gameBoard, bool isUserCoin) {
+
+			int slidingWindowStartPosition, hueristicScore, totalHueristicScore = 0, endColumn;
+			if (columnPlayed >= COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW) {
+				slidingWindowStartPosition = columnPlayed - COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+			}
+			else {
+				slidingWindowStartPosition = 0;
+			}
+
+			//Consider each four-in-a-row window starting from three before dropped column and ending at the dropped position
+			for (int startColumn = slidingWindowStartPosition; startColumn <= columnPlayed; ++startColumn) {
+
+				if (startColumn + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW > gameBoard.getNumberOfColumns() - 1) {
+					break;
+				}
+				else {
+					endColumn = startColumn + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+				}
+
+				int rowContainingDroppedCoin = gameBoard.getRowNumber(gameBoard.getPlayedSlot(columnPlayed));
+				if (isEmptyOrRequiredType(gameBoard.getBoardIndex(rowContainingDroppedCoin, startColumn), gameBoard.getBoardIndex(rowContainingDroppedCoin, endColumn), isUserCoin, hueristicScore, gameBoard)) {
+					if (hueristicScore == INT_MAX) {
+						return INT_MAX;
+					}
+					else {
+						totalHueristicScore += hueristicScore;
+					}
+				}
+			}
+
+			return totalHueristicScore;
+		}
+
+		//Heuristic score for dropping a coin in the column played for all potential four-in-a-row vertical configurations.
+		int getVerticalHueristicScore(int columnPlayed, model::GameBoard gameBoard, bool isUserCoin) {
+
+			int slidingWindowStartPosition, hueristicScore, totalHueristicScore = 0, endRow;
+			int coinDroppedInRow = gameBoard.getRowNumber(gameBoard.getPlayedSlot(columnPlayed));
+
+			if (coinDroppedInRow >= COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW) {
+				slidingWindowStartPosition = coinDroppedInRow - COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+			}
+			else {
+				slidingWindowStartPosition = 0;
+			}
+
+			//Consider each four-in-a-row window in the vertical column
+			for (int startRow = slidingWindowStartPosition; startRow <= coinDroppedInRow; ++startRow) {
+
+				if (startRow + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW > gameBoard.getNumberOfRows() - 1) {
+					break;
+				}
+				else {
+					endRow = startRow + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+				}
+
+				if (isEmptyOrRequiredType(gameBoard.getBoardIndex(startRow, columnPlayed), gameBoard.getBoardIndex(endRow, columnPlayed), isUserCoin, hueristicScore, gameBoard)) {
+					if (hueristicScore == INT_MAX) {
+						return INT_MAX;
+					}
+					else {
+						totalHueristicScore += hueristicScore;
+					}
+				}
+			}
+
+			return totalHueristicScore;
+		}
+
+		int getPositiveSlopeHueristicScore(int columnPlayed, model::GameBoard gameBoard, bool isUserCoin) {
+
+			int slidingWindowStartRowPosition, slidingWindowStartColumnPosition, hueristicScore, totalHueristicScore = 0, endRow, endColumn;
+			int coinDroppedInRow = gameBoard.getRowNumber(gameBoard.getPlayedSlot(columnPlayed));
+
+			if (gameBoard.getNumberOfRows() - 1 - coinDroppedInRow >= COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW && columnPlayed >= COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW) {
+				//If you can go three down and left to start
+				slidingWindowStartRowPosition = coinDroppedInRow + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+				slidingWindowStartColumnPosition = columnPlayed - COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+			}
+			else {
+				//You can only got the minimum of two values down and left
+				int rowDistanceFromBottom = gameBoard.getNumberOfRows() - 1 - coinDroppedInRow;
+				int columnDistanceFromLeft = columnPlayed;
+
+				slidingWindowStartRowPosition = coinDroppedInRow + std::min(rowDistanceFromBottom, columnDistanceFromLeft);
+				slidingWindowStartColumnPosition = columnPlayed - std::min(rowDistanceFromBottom, columnDistanceFromLeft);
+			}
+
+			//Consider each four-in-a-row window starting from three before dropped column and ending at the dropped position
+			for (int startRow = slidingWindowStartRowPosition, startColumn = slidingWindowStartColumnPosition; startColumn <= columnPlayed; --startRow, ++startColumn) {
+
+				if (startColumn + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW > gameBoard.getNumberOfColumns() - 1 ||
+					startRow < COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW) {
+					break;
+				}
+				else {
+					endRow = startRow - COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+					endColumn = startColumn + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+				}
+
+				if (isEmptyOrRequiredType(gameBoard.getBoardIndex(startRow, startColumn), gameBoard.getBoardIndex(endRow, endColumn), isUserCoin, hueristicScore, gameBoard)) {
+					if (hueristicScore == INT_MAX) {
+						return INT_MAX;
+					}
+					else {
+						totalHueristicScore += hueristicScore;
+					}
+				}
+			}
+
+			return totalHueristicScore;
+		}
+
+		int getNegativeSlopeHueristicScore(int columnPlayed, model::GameBoard gameBoard, bool isUserCoin) {
+
+			int slidingWindowStartRowPosition, slidingWindowStartColumnPosition, hueristicScore, totalHueristicScore = 0, endRow, endColumn;
+			int coinDroppedInRow = gameBoard.getRowNumber(gameBoard.getPlayedSlot(columnPlayed));
+
+			if (coinDroppedInRow >= COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW && columnPlayed >= COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW) {
+				slidingWindowStartRowPosition = coinDroppedInRow - COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+				slidingWindowStartColumnPosition = columnPlayed - COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+			}
+			else {
+				int rowDistanceFromTop = coinDroppedInRow;
+				int columnDistanceFromLeft = columnPlayed;
+
+				slidingWindowStartRowPosition = coinDroppedInRow - std::min(rowDistanceFromTop, columnDistanceFromLeft);
+				slidingWindowStartColumnPosition = columnPlayed - std::min(rowDistanceFromTop, columnDistanceFromLeft);
+			}
+
+			//Consider each four-in-a-row window starting from three before dropped column and ending at the dropped position
+			for (int startRow = slidingWindowStartRowPosition, startColumn = slidingWindowStartColumnPosition; startColumn <= columnPlayed; ++startRow, ++startColumn) {
+
+				if (startColumn + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW > gameBoard.getNumberOfColumns() - 1 ||
+					startRow + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW > gameBoard.getNumberOfRows() - 1) {
+					break;
+				}
+				else {
+					endRow = startRow + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+					endColumn = startColumn + COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW;
+				}
+
+				if (isEmptyOrRequiredType(gameBoard.getBoardIndex(startRow, startColumn), gameBoard.getBoardIndex(endRow, endColumn), isUserCoin, hueristicScore, gameBoard)) {
+					if (hueristicScore == INT_MAX) {
+						return INT_MAX;
+					}
+					else {
+						totalHueristicScore += hueristicScore;
+					}
+				}
+			}
+
+			return totalHueristicScore;
+		}
+
+		//Find best move by considering all columns in parallel using the Map pattern
+		int evaluatePotentialMovesInParallel() {
+
+			int depth = this->gameDifficultyLevel;
 		
-		dropCoin(dropInColumn, true);
-	}
+			return tbb::parallel_reduce(
+				tbb::blocked_range<int>(0, this->gameBoard.getNumberOfColumns()),
+				0,
+				[=](const tbb::blocked_range<int>& range, int bestMove)->int {
+				int currentScore, bestScore = -1 * INT_MAX;
+				for (int columnCounter = range.begin(); columnCounter != range.end(); ++columnCounter) {
+					//std::cout << "Column " << columnCounter << std::endl;
+					if (this->gameBoard.isValidPlay(columnCounter)) {
+						//Make a copy of the current gameboard to simulate a dropped coin
+						model::GameBoard whatIfGameBoard{ this->gameBoard.getGameBoardVector(), this->gameBoard.getNumberOfRows(), this->gameBoard.getNumberOfColumns() };
+						whatIfGameBoard.forceDropCoin(columnCounter, false);
+						currentScore = getMoveHueristicScore(depth, columnCounter, false, whatIfGameBoard);
+						std::cout << "Score is " << currentScore << " for column " << columnCounter << std::endl;
+						if (currentScore > bestScore) {
+							bestScore = currentScore;
+							bestMove = columnCounter;
+							std::cout << "Best score is " << currentScore << " for column " << columnCounter << std::endl;
+						}
+					}
+					else {
+						//std::cout << "Column " << columnCounter << " is not valid." << std::endl;
+					}
+				}
+				std::cout << "Return best move " << bestMove << std::endl;
+				return bestMove;
+			},
+				[](int bestMove1, int bestMove2)->int {
+				std::cout << "Best move to play is " << std::max(bestMove1, bestMove2) << std::endl;
+				return std::max(bestMove1, bestMove2);
+			}
+			);
 
-};
+		}
+
+		//Find best move by considering all columns in one after the other
+		int evaluatePotentialMovesInSeries() {
+
+			int depth = this->gameDifficultyLevel, currentScore, bestScore = -1 * INT_MAX, bestMove = 0;
+			for (int columnCounter = 0; columnCounter < this->gameBoard.getNumberOfColumns(); ++columnCounter) {
+				//std::cout << "Series Column " << columnCounter << std::endl;
+				if (this->gameBoard.isValidPlay(columnCounter)) {
+					//Make a copy of the current gameboard to simulate a dropped coin
+					model::GameBoard whatIfGameBoard(this->gameBoard.getGameBoardVector(), this->gameBoard.getNumberOfRows(), this->gameBoard.getNumberOfColumns());
+					whatIfGameBoard.forceDropCoin(columnCounter, false);
+					currentScore = getMoveHueristicScore(depth, columnCounter, false, whatIfGameBoard);
+					//std::cout << "Series score is " << currentScore << " for column " << columnCounter << std::endl;
+					if (currentScore > bestScore) {
+						bestScore = currentScore;
+						bestMove = columnCounter;
+						//std::cout << "Best score is " << currentScore << " for column " << columnCounter << std::endl;
+					}
+				}
+				else {
+					//std::cout << "Column " << columnCounter << " is not valid." << std::endl;
+				}
+			}
+			return bestMove;
+		}
+
+		//Consider all possible moves and play the one with the best hueristic score that maximizes the chance of winning 
+		int counterUserMove() {
+			if (this->defaultModeIsParallel) {
+				return evaluatePotentialMovesInParallel();
+			}
+			else {
+				return evaluatePotentialMovesInSeries();
+			}
+		}
+
+	public:
+
+		//Default constructor will set game parameters using default values
+		ConnectFourGame() {
+
+			gameBoard = model::GameBoard();
+			this->firstPlayerIsUser = DEFAULT_FIRST_PLAYER_IS_USER;
+			this->gameDifficultyLevel = DEFAULT_DIFFICULTY_LEVEL;
+			this->defaultModeIsParallel = DEFAULT_MODE_IS_PARALLEL;
+			this->gameIsOver = false;
+			//TODO computer to go first depending on user setting
+		}
+
+		ConnectFourGame(int numberOfRows, int numberOfColumns) {
+
+			gameBoard = model::GameBoard(numberOfRows, numberOfColumns);
+			this->firstPlayerIsUser = DEFAULT_FIRST_PLAYER_IS_USER;
+			this->gameDifficultyLevel = DEFAULT_DIFFICULTY_LEVEL;
+			this->defaultModeIsParallel = DEFAULT_MODE_IS_PARALLEL;
+			this->gameIsOver = false;
+			//TODO computer to go first depending on user setting
+		}
+
+		//First player will be determined by user selection
+		void setWhoPlaysFirst(bool firstPlayerIsUser) {
+			this->firstPlayerIsUser = firstPlayerIsUser;
+		}
+
+		//Difficulty level will be set by user
+		void setgameDifficultyLevel(int gameDifficultyLevel) {
+			this->gameDifficultyLevel = gameDifficultyLevel;
+		}
+
+		bool isGameOver() {
+			return this->gameIsOver;
+		}
+
+		bool didUserWinTheGame() {
+			return this->userWonTheGame;
+		}
+
+		//Set the serial/parallel computation mode depending on user preference
+		void setComputationModeToParallel(bool parallelMode) {
+			this->defaultModeIsParallel = parallelMode;
+		}
+
+		const model::GameBoard& getGameBoard() const {
+			return this->gameBoard;
+		}
+
+		//User method to drop a coin into one of the columns
+		void dropCoin(int dropInColumn) {
+
+			if (!this->gameIsOver) {
+				dropCoin(dropInColumn, true);
+			}
+		}
+
+	};
+
+}
+
+#endif

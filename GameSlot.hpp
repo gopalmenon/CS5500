@@ -1,3 +1,6 @@
+#ifndef GAMESLOT
+#define GAMESLOT
+
 #include <exception>
 #include <stdexcept>
 
@@ -6,7 +9,7 @@ class GameSlot {
 
 private:
 
-	enum class SlotStates {empty, hasUserCoin, hasComputerCoin};
+	enum class SlotStates { empty, hasUserCoin, hasComputerCoin };
 
 	SlotStates slotState;
 
@@ -35,7 +38,7 @@ public:
 	}
 
 	//Check if slot is empty
-	bool isEmpty() {
+	bool isEmpty() const {
 
 		if (this->slotState == SlotStates::empty) {
 			return true;
@@ -45,4 +48,14 @@ public:
 		}
 	}
 
+	bool hasUserCoin() {
+		return this->slotState == SlotStates::hasUserCoin;
+	}
+
+	bool hasComputerCoin() {
+		return this->slotState == SlotStates::hasComputerCoin;
+	}
+
 };
+
+#endif
