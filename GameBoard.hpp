@@ -57,7 +57,7 @@ namespace model {
 			return this->numberOfRows;
 		}
 
-		int getNumberOfColumns() const {
+		const int getNumberOfColumns() const {
 			return this->numberOfColumns;
 		}
 

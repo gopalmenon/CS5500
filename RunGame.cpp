@@ -7,7 +7,7 @@
 int getColumnPlayedByUser() {
 
 	int columnSelectedByUser;
-	std::cout << "Which column do you want to drop the coin in (1 to 7): ";
+	std::cout << std::endl << "Which column do you want to drop the coin in (1 to 7): ";
 	while (true) {
 		std::cin >> columnSelectedByUser;
 		if (columnSelectedByUser >= 1 && columnSelectedByUser <= 7) {
@@ -19,18 +19,19 @@ int getColumnPlayedByUser() {
 //Show the game board to the user
 void showGameBoard(const std::vector<GameSlot>& gameBoardVector, int numberOfRowsToDisplay, int numberOfColumnsToDisplay) {
 
+	std::cout << std::endl;
 	for (int rowCounter = 0; rowCounter < numberOfRowsToDisplay; ++rowCounter) {
 		for (int columnCounter = 0; columnCounter < numberOfColumnsToDisplay; ++columnCounter) {
 
 			GameSlot gameSlot = gameBoardVector.at(rowCounter * numberOfColumnsToDisplay + columnCounter);
 			if (gameSlot.isEmpty()) {
-				std::cout << "_";
+				std::cout << "_|";
 			}
 			else if (gameSlot.hasUserCoin()) {
-				std::cout << "U";
+				std::cout << "U|";
 			}
 			else {
-				std::cout << "C";
+				std::cout << "C|";
 			}
 		}
 		std::cout << std::endl;
@@ -54,15 +55,12 @@ int main() {
 		std::cout << std::endl << "Difficulty level set to default value" << std::endl;
 	}
 
-	std::string computationsInParallel;
-	std::cout << "Do you want to run parallel computations? ";
-	std::cin >> computationsInParallel;
-	if (computationsInParallel.compare("N") == 0 || computationsInParallel.compare("n") == 0) {
-		connectFourGame.setComputationModeToParallel(false);
-	}
-	else {
-		std::cout << std::endl << "Computations will be in parallel" << std::endl;
-	}
+	//std::string computationsInParallel;
+	//std::cout << "Do you want to run parallel computations? ";
+	//std::cin >> computationsInParallel;
+	//if (computationsInParallel.compare("N") == 0 || computationsInParallel.compare("n") == 0) {
+	//	connectFourGame.setComputationModeToParallel(false);
+	//}
 
 	model::GameBoard gameBoard;
 
@@ -73,11 +71,16 @@ int main() {
 		gameBoard = connectFourGame.getGameBoard();
 		showGameBoard(gameBoard.getGameBoardVector(), gameBoard.getNumberOfRows(), gameBoard.getNumberOfColumns());
 		if (connectFourGame.isGameOver()) {
+			if (!connectFourGame.isGameBoardFull()) {
+				if (connectFourGame.didUserWinTheGame()) {
+					std::cout << std::endl << "Congratulations, you won!!!" << std::endl;
+				}
+				else {
+					std::cout << std::endl << "Sorry, better luck next time" << std::endl;
+				}
+			}
 			break;
 		}
 	}
-
-	
-	connectFourGame.dropCoin(3);
 
 }

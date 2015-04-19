@@ -2,7 +2,7 @@
 #define CONNECTFOURGAME
 
 #include <tbb\blocked_range.h>
-#include <tbb\parallel_reduce.h>
+#include <tbb\parallel_for.h>
 
 #include "GameBoard.hpp"
 #include "GameSlot.hpp"
@@ -28,35 +28,53 @@ namespace controller {
 		const static int HEURISTIC_SCORE_FOR_THREE_IN_ROW = 9;
 		const static int HEURISTIC_SCORE_FOR_FOUR_IN_ROW = INT_MAX;
 		const static int COLUMN_OR_ROW_DIFFERENCE_FOR_FOUR_IN_A_ROW = 3;
+		const static int HEURISTIC_SCORE_DIRECTIONS = 4;
 
 		int gameDifficultyLevel;
-		bool firstPlayerIsUser, defaultModeIsParallel, gameIsOver, userWonTheGame;
+		bool firstPlayerIsUser, gameModeIsParallel, gameIsOver, userWonTheGame;
 		model::GameBoard gameBoard;
 
-		//Drop a coin into one of the columns
-		void dropCoin(int dropInColumn, bool isUserCoin) {
+		//Get heuristic scores for the four possible directions
+		void getHueristicScores(int& horizontalHueristicScore, int& verticalHueristicScore, int& positiveSlopeHueristicScore, int& negativeSlopeHueristicScore, int columnPlayed, const model::GameBoard gameBoard, bool isUserCoin) {
 
-			//First check if the play is a valid one
-			if (this->gameBoard.isValidPlay(dropInColumn)) {
+			if (this->gameModeIsParallel) {
 
-				//Place a user coin in the top available position
-				GameSlot& gameSlot = this->gameBoard.getGameSlot(this->gameBoard.getAvailableSlot(dropInColumn));
-				gameSlot.putCoin(isUserCoin);
+				tbb::parallel_for(
+					tbb::blocked_range<int>(0, gameBoard.getNumberOfColumns()),
+					[=, &horizontalHueristicScore, &verticalHueristicScore, &positiveSlopeHueristicScore, &negativeSlopeHueristicScore](tbb::blocked_range<int> range) {
 
-				if (wasWinningPlay(dropInColumn, true)) {
-					endTheGame(true);
-				}
-				else {
-					//Make a move to best counter the user move
-					int columnToPlay = counterUserMove();
-					//std::cout << "User move countered by dropping in column " << columnToPlay << std::endl;
-					int rowToPlay = this->gameBoard.getRowNumber(this->gameBoard.getAvailableSlot(columnToPlay));
-					GameSlot& gameSlot = this->gameBoard.getGameSlot(this->gameBoard.getBoardIndex(rowToPlay, columnToPlay));
-					gameSlot.putCoin(false);
-					if (wasWinningPlay(columnToPlay, false)) {
-						endTheGame(false);
+					for (int counter = 0; counter < HEURISTIC_SCORE_DIRECTIONS; ++counter) {
+
+						switch (counter) {
+
+						case 0:
+							horizontalHueristicScore = getHorizontalHueristicScore(columnPlayed, gameBoard, isUserCoin);
+							break;
+
+						case 1:
+							verticalHueristicScore = getVerticalHueristicScore(columnPlayed, gameBoard, isUserCoin);
+							break;
+
+						case 2:
+							positiveSlopeHueristicScore = getPositiveSlopeHueristicScore(columnPlayed, gameBoard, isUserCoin);
+							break;
+
+						case 3:
+							negativeSlopeHueristicScore = getNegativeSlopeHueristicScore(columnPlayed, gameBoard, isUserCoin);
+							break;
+
+						}
+
 					}
 				}
+				);
+
+			}
+			else {
+				horizontalHueristicScore = getHorizontalHueristicScore(columnPlayed, gameBoard, isUserCoin);
+				verticalHueristicScore = getVerticalHueristicScore(columnPlayed, gameBoard, isUserCoin);
+				positiveSlopeHueristicScore = getPositiveSlopeHueristicScore(columnPlayed, gameBoard, isUserCoin);
+				negativeSlopeHueristicScore = getNegativeSlopeHueristicScore(columnPlayed, gameBoard, isUserCoin);
 			}
 		}
 
@@ -65,11 +83,8 @@ namespace controller {
 
 			//Compute hueristic scores for horizontal, vertical and diagonal four coins in a row resulting from 
 			//coin being dropped in column
-			int horizontalHueristicScore = getHorizontalHueristicScore(columnPlayed, this->gameBoard, isUserCoin);
-			int verticalHueristicScore = getVerticalHueristicScore(columnPlayed, this->gameBoard, isUserCoin);
-			int positiveSlopeHueristicScore = getPositiveSlopeHueristicScore(columnPlayed, this->gameBoard, isUserCoin);
-			int negativeSlopeHueristicScore = getNegativeSlopeHueristicScore(columnPlayed, this->gameBoard, isUserCoin);
-
+			int horizontalHueristicScore, verticalHueristicScore, positiveSlopeHueristicScore, negativeSlopeHueristicScore;
+			getHueristicScores(horizontalHueristicScore, verticalHueristicScore, positiveSlopeHueristicScore, negativeSlopeHueristicScore, columnPlayed, this->gameBoard, isUserCoin);
 			//If it was a winning move, then return with indicator saying so
 			if (horizontalHueristicScore == INT_MAX ||
 				verticalHueristicScore == INT_MAX ||
@@ -90,35 +105,36 @@ namespace controller {
 		}
 
 		int bestHeuristicScoreForOpponentMoveParallel(int depth, bool isUserCoin, const model::GameBoard gameBoard) {
-			//Do a parallel reduction to find the move with the highest score
 
-			return tbb::parallel_reduce(
+			//Do a map to find the move with the highest score
+			std::vector<int> moveScores(gameBoard.getNumberOfColumns());
+
+			tbb::parallel_for(
 				tbb::blocked_range<int>(0, gameBoard.getNumberOfColumns()),
-				0,
-				[=](const tbb::blocked_range<int>& range, int bestScore)->int {
-				int currentScore;
-				bestScore = -1 * INT_MAX;
-				for (int columnCounter = range.begin(); columnCounter != range.end(); ++columnCounter) {
+				[=, &moveScores](tbb::blocked_range<int> range) {
 
-					if (gameBoard.isValidPlay(columnCounter)) {
-						//Make a copy of the current gameboard to simulate a dropped coin
-						model::GameBoard whatIfGameBoard{ gameBoard.getGameBoardVector(), this->gameBoard.getNumberOfRows(), this->gameBoard.getNumberOfColumns() };
-						whatIfGameBoard.forceDropCoin(columnCounter, isUserCoin);
-
-						currentScore = getMoveHueristicScore(depth, columnCounter, isUserCoin, whatIfGameBoard);
-						if (currentScore > bestScore) {
-							bestScore = currentScore;
+					for (int columnCounter = range.begin(); columnCounter != range.end(); ++columnCounter) {
+						if (gameBoard.isValidPlay(columnCounter)) {
+							model::GameBoard whatIfGameBoard{ gameBoard.getGameBoardVector(), this->gameBoard.getNumberOfRows(), this->gameBoard.getNumberOfColumns() };
+							whatIfGameBoard.forceDropCoin(columnCounter, isUserCoin);
+							moveScores.at(columnCounter) = getMoveHueristicScore(depth, columnCounter, isUserCoin, whatIfGameBoard);
 						}
-
+						else {
+							moveScores.at(columnCounter) = -1 * INT_MAX;
+						}
 					}
 				}
-
-				return bestScore;
-			},
-				[](int bestScore1, int bestScore2)->int {
-				return std::max(bestScore1, bestScore2);
-			}
 			);
+
+			int bestScore = -1 * INT_MAX;
+			for (int moveCounter = 0; moveCounter < gameBoard.getNumberOfColumns(); ++moveCounter) {
+				if (moveScores.at(moveCounter) > bestScore) {
+					bestScore = moveScores.at(moveCounter);
+				}
+			}
+
+			return bestScore;
+
 		}
 
 		int bestHeuristicScoreForOpponentMoveSeries(int depth, bool isUserCoin, const model::GameBoard gameBoard) {
@@ -145,7 +161,7 @@ namespace controller {
 		//Compute best heuristic score for opponent move
 		int bestHeuristicScoreForOpponentMove(int depth, bool isUserCoin, const model::GameBoard gameBoard) {
 
-			if (this->defaultModeIsParallel) {
+			if (this->gameModeIsParallel) {
 				return bestHeuristicScoreForOpponentMoveParallel(depth, isUserCoin, gameBoard);
 			}
 			else {
@@ -157,7 +173,6 @@ namespace controller {
 		//Compute and return the hueristic score for the move
 		int getMoveHueristicScore(int depth, int columnPlayed, bool isUserCoin, model::GameBoard gameBoard) {
 
-			//std::cout << "depth " << depth << ", column " << columnPlayed << (isUserCoin ? ", user coin" : ", computer coin") << std::endl;
 			//If maximum depth has been reached, then return
 			if (depth == 0) {
 				return 0;
@@ -165,10 +180,8 @@ namespace controller {
 
 			//Compute hueristic scores for horizontal, vertical and diagonal four coins in a row resulting from 
 			//coin being dropped in column
-			int horizontalHueristicScore = getHorizontalHueristicScore(columnPlayed, gameBoard, isUserCoin);
-			int verticalHueristicScore = getVerticalHueristicScore(columnPlayed, gameBoard, isUserCoin);
-			int positiveSlopeHueristicScore = getPositiveSlopeHueristicScore(columnPlayed, gameBoard, isUserCoin);
-			int negativeSlopeHueristicScore = getNegativeSlopeHueristicScore(columnPlayed, gameBoard, isUserCoin);
+			int horizontalHueristicScore, verticalHueristicScore, positiveSlopeHueristicScore, negativeSlopeHueristicScore;
+			getHueristicScores(horizontalHueristicScore, verticalHueristicScore, positiveSlopeHueristicScore, negativeSlopeHueristicScore, columnPlayed, gameBoard, isUserCoin);
 
 			//If it was a winning move, then return with indicator saying so
 			if (horizontalHueristicScore == INT_MAX ||
@@ -439,38 +452,34 @@ namespace controller {
 		int evaluatePotentialMovesInParallel() {
 
 			int depth = this->gameDifficultyLevel;
-		
-			return tbb::parallel_reduce(
+			std::vector<int> moveScores(this->gameBoard.getNumberOfColumns());
+
+			tbb::parallel_for(
 				tbb::blocked_range<int>(0, this->gameBoard.getNumberOfColumns()),
-				0,
-				[=](const tbb::blocked_range<int>& range, int bestMove)->int {
-				int currentScore, bestScore = -1 * INT_MAX;
+				[=, &moveScores](tbb::blocked_range<int> range) {
+
 				for (int columnCounter = range.begin(); columnCounter != range.end(); ++columnCounter) {
-					//std::cout << "Column " << columnCounter << std::endl;
 					if (this->gameBoard.isValidPlay(columnCounter)) {
+
 						//Make a copy of the current gameboard to simulate a dropped coin
 						model::GameBoard whatIfGameBoard{ this->gameBoard.getGameBoardVector(), this->gameBoard.getNumberOfRows(), this->gameBoard.getNumberOfColumns() };
 						whatIfGameBoard.forceDropCoin(columnCounter, false);
-						currentScore = getMoveHueristicScore(depth, columnCounter, false, whatIfGameBoard);
-						std::cout << "Score is " << currentScore << " for column " << columnCounter << std::endl;
-						if (currentScore > bestScore) {
-							bestScore = currentScore;
-							bestMove = columnCounter;
-							std::cout << "Best score is " << currentScore << " for column " << columnCounter << std::endl;
-						}
-					}
-					else {
-						//std::cout << "Column " << columnCounter << " is not valid." << std::endl;
+						moveScores.at(columnCounter) = getMoveHueristicScore(depth, columnCounter, false, whatIfGameBoard);
+
 					}
 				}
-				std::cout << "Return best move " << bestMove << std::endl;
-				return bestMove;
-			},
-				[](int bestMove1, int bestMove2)->int {
-				std::cout << "Best move to play is " << std::max(bestMove1, bestMove2) << std::endl;
-				return std::max(bestMove1, bestMove2);
 			}
 			);
+
+			int bestMove = 0, bestScore = -1 * INT_MAX;
+			for (int moveCounter = 0; moveCounter < this->gameBoard.getNumberOfColumns(); ++moveCounter) {
+				if (moveScores.at(moveCounter) > bestScore) {
+					bestScore = moveScores.at(moveCounter);
+					bestMove = moveCounter;
+				}
+			}
+
+			return bestMove;
 
 		}
 
@@ -479,21 +488,17 @@ namespace controller {
 
 			int depth = this->gameDifficultyLevel, currentScore, bestScore = -1 * INT_MAX, bestMove = 0;
 			for (int columnCounter = 0; columnCounter < this->gameBoard.getNumberOfColumns(); ++columnCounter) {
-				//std::cout << "Series Column " << columnCounter << std::endl;
+
 				if (this->gameBoard.isValidPlay(columnCounter)) {
 					//Make a copy of the current gameboard to simulate a dropped coin
 					model::GameBoard whatIfGameBoard(this->gameBoard.getGameBoardVector(), this->gameBoard.getNumberOfRows(), this->gameBoard.getNumberOfColumns());
 					whatIfGameBoard.forceDropCoin(columnCounter, false);
 					currentScore = getMoveHueristicScore(depth, columnCounter, false, whatIfGameBoard);
-					//std::cout << "Series score is " << currentScore << " for column " << columnCounter << std::endl;
+
 					if (currentScore > bestScore) {
 						bestScore = currentScore;
 						bestMove = columnCounter;
-						//std::cout << "Best score is " << currentScore << " for column " << columnCounter << std::endl;
 					}
-				}
-				else {
-					//std::cout << "Column " << columnCounter << " is not valid." << std::endl;
 				}
 			}
 			return bestMove;
@@ -501,13 +506,41 @@ namespace controller {
 
 		//Consider all possible moves and play the one with the best hueristic score that maximizes the chance of winning 
 		int counterUserMove() {
-			if (this->defaultModeIsParallel) {
+			if (this->gameModeIsParallel) {
 				return evaluatePotentialMovesInParallel();
 			}
 			else {
 				return evaluatePotentialMovesInSeries();
 			}
 		}
+
+		//Drop a coin into one of the columns
+		void dropCoin(int dropInColumn, bool isUserCoin) {
+
+			//First check if the play is a valid one
+			if (this->gameBoard.isValidPlay(dropInColumn)) {
+
+				//Place a user coin in the top available position
+				GameSlot& gameSlot = this->gameBoard.getGameSlot(this->gameBoard.getAvailableSlot(dropInColumn));
+				gameSlot.putCoin(isUserCoin);
+
+				if (wasWinningPlay(dropInColumn, true) || isGameBoardFull()) {
+					endTheGame(true);
+				}
+				else {
+					//Make a move to best counter the user move
+					int columnToPlay = counterUserMove();
+					//std::cout << "User move countered by dropping in column " << columnToPlay << std::endl;
+					int rowToPlay = this->gameBoard.getRowNumber(this->gameBoard.getAvailableSlot(columnToPlay));
+					GameSlot& gameSlot = this->gameBoard.getGameSlot(this->gameBoard.getBoardIndex(rowToPlay, columnToPlay));
+					gameSlot.putCoin(false);
+					if (wasWinningPlay(columnToPlay, false) || isGameBoardFull()) {
+						endTheGame(false);
+					}
+				}
+			}
+		}
+
 
 	public:
 
@@ -517,9 +550,9 @@ namespace controller {
 			gameBoard = model::GameBoard();
 			this->firstPlayerIsUser = DEFAULT_FIRST_PLAYER_IS_USER;
 			this->gameDifficultyLevel = DEFAULT_DIFFICULTY_LEVEL;
-			this->defaultModeIsParallel = DEFAULT_MODE_IS_PARALLEL;
+			this->gameModeIsParallel = DEFAULT_MODE_IS_PARALLEL;
 			this->gameIsOver = false;
-			//TODO computer to go first depending on user setting
+
 		}
 
 		ConnectFourGame(int numberOfRows, int numberOfColumns) {
@@ -527,9 +560,9 @@ namespace controller {
 			gameBoard = model::GameBoard(numberOfRows, numberOfColumns);
 			this->firstPlayerIsUser = DEFAULT_FIRST_PLAYER_IS_USER;
 			this->gameDifficultyLevel = DEFAULT_DIFFICULTY_LEVEL;
-			this->defaultModeIsParallel = DEFAULT_MODE_IS_PARALLEL;
+			this->gameModeIsParallel = DEFAULT_MODE_IS_PARALLEL;
 			this->gameIsOver = false;
-			//TODO computer to go first depending on user setting
+
 		}
 
 		//First player will be determined by user selection
@@ -552,7 +585,7 @@ namespace controller {
 
 		//Set the serial/parallel computation mode depending on user preference
 		void setComputationModeToParallel(bool parallelMode) {
-			this->defaultModeIsParallel = parallelMode;
+			this->gameModeIsParallel = parallelMode;
 		}
 
 		const model::GameBoard& getGameBoard() const {
@@ -567,6 +600,18 @@ namespace controller {
 			}
 		}
 
+		//Method to check if the board has been filled and play cannot continue
+		bool isGameBoardFull() {
+
+			//Check to see that at least one slot in the top row is empty
+			for (int counter = 0; counter < this->gameBoard.getNumberOfColumns(); ++counter) {
+				if (this->gameBoard.getGameSlot(counter).isEmpty()) {
+					return false;
+				}
+			}
+
+			return true;
+		}
 	};
 
 }
